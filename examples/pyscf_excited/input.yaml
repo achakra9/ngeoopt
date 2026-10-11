@@ -1,0 +1,27 @@
+# S1 optimization of formaldehyde with TDA-B3LYP, followed by transition-density overlaps
+task: optimize
+molecule:
+  geometry: |
+    C  0.000  0.000 -0.530
+    O  0.000  0.000  0.680
+    H  0.000  0.940 -1.120
+    H  0.000 -0.940 -1.120
+backend:
+  name: pyscf
+  method: b3lyp
+  basis: 6-31g*
+  excited: tda
+  nroots: 5              # ask for a few more roots than the target
+  spin_states: singlet
+state:
+  root: 1                # 0 = S0 (SCF reference), 1 = lowest singlet excited state
+  multiplicity: 1
+  method: overlap
+  min_overlap: 0.6
+gradient:
+  scheme: central
+  step: 0.005
+optimizer:
+  convergence: gaussian
+parallel:
+  workers: 8

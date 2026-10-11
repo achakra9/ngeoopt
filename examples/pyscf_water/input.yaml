@@ -1,0 +1,11 @@
+# Ground-state B3LYP optimization of water with PySCF
+task: optimize
+molecule:
+  xyz: water.xyz
+backend:
+  name: pyscf
+  method: b3lyp
+  basis: 6-31g*
+parallel:
+  workers: auto          # one process per core
+  device: auto           # gpu4pyscf on NVIDIA if installed, CPU otherwise

@@ -1,0 +1,15 @@
+# Any program: ORCA through the generic template backend
+task: optimize
+molecule:
+  xyz: ../pyscf_water/water.xyz
+backend:
+  name: template
+  template_file: job.tpl          # relative to where you launch ngeoopt
+  input_name: job.inp
+  output_name: job.out
+  command: "$(which orca) {input} > {output}"
+  energy_regex: 'FINAL SINGLE POINT ENERGY\s+(\S+)'
+  success_regex: 'ORCA TERMINATED NORMALLY'
+parallel:
+  workers: 4
+  threads_per_worker: 2
