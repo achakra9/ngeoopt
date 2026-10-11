@@ -125,12 +125,20 @@ class StateTracker:
         if result is not None and result.ao_overlap is not None:
             self.reference_overlap_matrix = result.ao_overlap
 
-    def select(self, result: EnergyResult) -> Match:
-        """Pick the state in ``result`` that corresponds to the reference."""
+    def select(self, result: EnergyResult, expected_energy: Optional[float] = None) -> Match:
+        """Pick the state in ``result`` that corresponds to the reference.
+
+        ``expected_energy`` is where the target state should be at this geometry
+        (e.g. the optimizer's quadratic prediction). Energy-based matching then
+        compares against it instead of the reference geometry's energy, which
+        matters after real optimization steps where the state's own energy
+        changes by more than the gap to its neighbours.
+        """
         if self.reference is None:
             st = self.initialize(result)
             return Match(st, result.states.index(st), 1.0, "init")
         ref = self.reference
+        e_ref = ref.energy if expected_energy is None else expected_energy
         cands = self._candidates(result)
         if len(result.states) == 1:
             return Match(result.states[0], 0, 1.0, "single")
@@ -178,7 +186,7 @@ class StateTracker:
             # near-degenerate overlaps (strongly mixed states): prefer the closer energy
             if len(scored) > 1 and scored[0][0] - scored[1][0] < self.settings.overlap_tie:
                 close = [t for t in scored if scored[0][0] - t[0] < self.settings.overlap_tie]
-                ov, pos, s = min(close, key=lambda t: abs(t[2].energy - ref.energy))
+                ov, pos, s = min(close, key=lambda t: abs(t[2].energy - e_ref))
             if ov < self.settings.min_overlap:
                 log.warning("best state overlap %.3f below threshold %.2f (label %s)",
                             ov, self.settings.min_overlap, result.extra.get("label"))
@@ -187,7 +195,7 @@ class StateTracker:
         # energy / character: smallest distance
         best = (np.inf, None, None)
         for pos, s in cands:
-            d = abs(s.energy - ref.energy) / self.settings.energy_scale
+            d = abs(s.energy - e_ref) / self.settings.energy_scale
             if method == "character":
                 if (ref.multiplicity is not None and s.multiplicity is not None
                         and ref.multiplicity != s.multiplicity):
@@ -219,10 +227,10 @@ class StateTracker:
             stats["min_overlap"] = float(min(m.score for m in matches))
         return matches, stats
 
-    def advance(self, result: EnergyResult) -> Match:
-        """After an accepted step: match at the new geometry and update the reference."""
+    def advance(self, result: EnergyResult, expected_energy: Optional[float] = None) -> Match:
+        """Match at a new geometry and move the reference there (if ``follow``)."""
         old_index = self.reference.index if self.reference is not None else None
-        m = self.select(result)
+        m = self.select(result, expected_energy)
         if self.settings.follow:
             self.set_reference(m.state, result)
         self.history.append({"index": m.state.index, "energy": m.state.energy,
@@ -235,7 +243,7 @@ class StateTracker:
     # -- checkpointing ---------------------------------------------------
     def state_dict(self) -> dict:
         ref = self.reference
-        d = {"history": self.history}
+        d = {"history": list(self.history)}
         if ref is not None:
             d["reference"] = {"energy": ref.energy, "index": ref.index,
                               "multiplicity": ref.multiplicity,

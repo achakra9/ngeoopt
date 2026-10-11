@@ -261,7 +261,11 @@ class Optimizer:
             cycle += 1
             t0 = time.perf_counter()
             cur = mol.with_coords(x)
-            gr = self.fd.compute(cur, prefix=f"cycle{cycle:03d}")
+            # where the tracked state should be according to the quadratic model;
+            # also remember the tracker so a rejected step does not move it
+            expected = None if e_best is None or pred is None else e_best + pred
+            tracker_before = self.fd.tracker.state_dict()
+            gr = self.fd.compute(cur, prefix=f"cycle{cycle:03d}", expected_energy=expected)
             g, e = gr.gradient, gr.energy
             step_taken = None if x_best is None else x - x_best
             accepted = True
@@ -273,6 +277,7 @@ class Optimizer:
                 snorm = np.linalg.norm(ds)
                 if de > s.reject_energy_rise and trust > s.trust_min:
                     accepted = False
+                    self.fd.tracker.load_state_dict(tracker_before)
                     trust = max(s.trust_min, 0.25 * snorm)
                     log.info("cycle %d: energy rose by %.2e, step rejected; trust -> %.3g",
                              cycle, de, trust)

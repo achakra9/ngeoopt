@@ -116,7 +116,13 @@ class FiniteDifferenceGradient:
                 results[i] = r
         return results  # type: ignore[return-value]
 
-    def compute(self, mol: Molecule, prefix: str = "grad") -> GradientResult:
+    def compute(self, mol: Molecule, prefix: str = "grad",
+                expected_energy: Optional[float] = None) -> GradientResult:
+        """Gradient of the tracked state at ``mol``.
+
+        ``expected_energy`` (optional) is the predicted energy of the target
+        state here; it guides energy/character-based root matching.
+        """
         t0 = time.perf_counter()
         s = self.settings
         h = s.step
@@ -134,7 +140,7 @@ class FiniteDifferenceGradient:
         center, disp = results[0], results[1:]
 
         # pick the target state at the centre, then match every displacement to it
-        cmatch = self.tracker.advance(center)
+        cmatch = self.tracker.advance(center, expected_energy)
         local = self.tracker.child(cmatch.state, center)
         matches, stats = local.select_many(disp)
 
