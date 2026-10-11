@@ -38,7 +38,10 @@ def read_xyz_text(text: str) -> XYZ:
     """
     Read XYZ content from a string.
     """
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    lines = text.splitlines()
+    # skip leading blank lines, but keep the comment line even when it is empty
+    while lines and not lines[0].strip():
+        lines.pop(0)
     if len(lines) < 2:
         raise ValueError("XYZ must contain at least two lines (N and comment).")
 
@@ -47,8 +50,8 @@ def read_xyz_text(text: str) -> XYZ:
     except Exception:
         raise ValueError(f"Invalid atom count line: {lines[0]!r}")
 
-    comment = lines[1]
-    geom_lines = lines[2:]
+    comment = lines[1].strip()
+    geom_lines = [ln.strip() for ln in lines[2:] if ln.strip()]
 
     if len(geom_lines) < n_atoms:
         raise ValueError(
