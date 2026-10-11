@@ -4,6 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ngeoopt"
-version = "0.1.0"
-description = "Backend-agnostic molecular geometry optimization driver"
-dependencies = ["numpy", "scipy", "pyyaml", "typer"]
+dynamic = ["version"]
+description = "Parallel finite-difference geometry optimizer for any quantum-chemistry energy code"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Arnab Chakraborty" }]
+keywords = ["quantum chemistry", "geometry optimization", "finite difference", "pyscf", "q-chem"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Intended Audience :: Science/Research",
+]
+dependencies = ["numpy>=1.21", "pyyaml>=5.4", "typer>=0.9"]
+
+[project.optional-dependencies]
+pyscf = ["pyscf>=2.3"]
+# NVIDIA GPUs; pick the cupy/gpu4pyscf wheel matching your CUDA version
+cuda12 = ["pyscf>=2.3", "gpu4pyscf-cuda12x", "cupy-cuda12x"]
+cuda11 = ["pyscf>=2.3", "gpu4pyscf-cuda11x", "cupy-cuda11x"]
+# Apple silicon (MPS) for torch-based energy functions
+mps = ["torch>=2.0"]
+mpi = ["mpi4py>=3.1"]
+test = ["pytest>=7"]
+all = ["pyscf>=2.3", "torch>=2.0", "mpi4py>=3.1", "pytest>=7"]
+
+[project.scripts]
+ngeoopt = "ngeoopt.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "ngeoopt.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "pyscf: needs pyscf installed",
+    "slow: longer running tests",
+]
