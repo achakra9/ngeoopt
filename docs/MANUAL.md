@@ -185,7 +185,8 @@ Taking "root 2" at every displaced geometry would then difference two different 
 
 How the reference is used:
 - **Inside one gradient:** the target is first matched at the undisplaced geometry, against the previous cycle's state. Every displaced geometry is then matched against that center state.
-- **Between cycles:** with `follow: true`, the reference moves to the state matched at each new geometry, so the state can change character slowly without the overlap dropping.
+- **Between cycles:** with `follow: true`, the reference moves to the state matched at each new geometry, so the state can change character slowly without the overlap dropping. The reference moves only on accepted steps; a rejected step restores it.
+- **Energy terms between cycles:** for `character`/`energy` matching (and overlap tie-breaks), each candidate is compared against the energy the optimizer's quadratic model predicts for the target (E + g·s + ½ sᵀHs), not the previous geometry's energy. A real step changes the target's own energy by more than the gap to its neighbours, and the prediction keeps the match on the right state.
 - **SCF reference:** the reference determinant of a TDDFT/CIS run (flagged `scf_reference`) is identified by that flag, never by its position. An excited-state target is never allowed to collapse onto it.
 - **Spin-flip / MRSF:** the "ground" state here is itself one of the roots, so it has no such flag and is tracked like any other root.
 
@@ -337,7 +338,11 @@ Template placeholders:
 | `{{nthreads}}`, `{{label}}`, `{{workdir}}` | from the job |
 | anything in `variables` | your own values |
 
-Double braces never clash with `$rem`, `%pal` or single braces in real input formats. See `examples/template_xtb` and `examples/template_orca`.
+Double braces never clash with `$rem`, `%pal` or single braces in real input formats.
+
+File paths in the backend section (`template_file`, `copy_files`, and `.py` files in `parser`/`function`) are relative to the input file's folder.
+
+**Walkthrough:** [`examples/generic_code`](../examples/generic_code) is a complete, runnable example. It covers a numerical gradient, a ground-state optimization, and an excited-state optimization through a root reordering, all with a stand-in external program. It also includes a blank `TEMPLATE_your_code.yaml` to fill in for your own code. Real-program examples are in `examples/template_xtb` and `examples/template_orca`.
 
 ### Any Python function (`name: function`)
 

@@ -1,0 +1,36 @@
+# Step 1: numerical gradient only (no optimization).
+# Runs 1 + 6N = 19 single points in parallel and writes ngeoopt_run/gradient.txt
+#
+#   ngeoopt run gradient.yaml
+
+task: gradient
+
+molecule:
+  xyz: water.xyz
+  charge: 0
+  multiplicity: 1
+
+backend:
+  name: template
+  template_file: job.tpl                 # input template ({{...}} placeholders)
+  variables: {method: b3lyp, basis: def2-svp}
+  input_name: job.inp
+  output_name: job.out
+  copy_files: [fakeqc.py]                # copied into every job directory
+  command: "python3 fakeqc.py {input} > {output}"
+  energy_regex: 'FINAL ENERGY:\s+(\S+)'
+  energy_units: hartree
+  success_regex: 'terminated normally'
+
+gradient:
+  scheme: central                        # forward | central | central4
+  step: 0.005                            # Bohr
+
+parallel:
+  executor: process
+  workers: 4
+  threads_per_worker: 1                  # becomes {{nthreads}} in the template
+
+output:
+  workdir: gradient_run
+  keep_files: true                       # keep each job's input/output to inspect

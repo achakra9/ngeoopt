@@ -1,0 +1,35 @@
+# Step 2: ground-state geometry optimization with numerical gradients.
+#
+#   ngeoopt run optimize.yaml
+#   ngeoopt status optimize_run        # in another terminal, while it runs
+
+task: optimize
+
+molecule:
+  xyz: water.xyz
+
+backend:
+  name: template
+  template_file: job.tpl
+  variables: {method: b3lyp, basis: def2-svp}
+  input_name: job.inp
+  output_name: job.out
+  copy_files: [fakeqc.py]
+  command: "python3 fakeqc.py {input} > {output}"
+  energy_regex: 'FINAL ENERGY:\s+(\S+)'
+  success_regex: 'terminated normally'
+
+gradient:
+  scheme: central
+  step: 0.005
+
+optimizer:
+  method: rfo
+  max_cycles: 50
+  convergence: gaussian                  # loose | gaussian | qchem | tight | verytight
+
+parallel:
+  workers: 4
+
+output:
+  workdir: optimize_run

@@ -46,6 +46,33 @@ def teardown_logging(handlers) -> None:
     root.propagate = True
 
 
+def _resolve(path: str, base: Path) -> str:
+    p = Path(path).expanduser()
+    return str(p if p.is_absolute() else (base / p).resolve())
+
+
+def _resolve_spec(spec, base: Path):
+    """'file.py:func' -> absolute file path; 'package.module:func' unchanged."""
+    if not isinstance(spec, str) or ":" not in spec:
+        return spec
+    mod, func = spec.rsplit(":", 1)
+    if mod.endswith(".py"):
+        return f"{_resolve(mod, base)}:{func}"
+    return spec
+
+
+def resolve_backend_paths(opts: dict, base: Path) -> dict:
+    """Make file paths in the backend section relative to the input file."""
+    if opts.get("template_file"):
+        opts["template_file"] = _resolve(opts["template_file"], base)
+    if opts.get("copy_files"):
+        opts["copy_files"] = [_resolve(f, base) for f in opts["copy_files"]]
+    for key in ("parser", "function"):
+        if key in opts:
+            opts[key] = _resolve_spec(opts[key], base)
+    return opts
+
+
 @dataclass
 class RunResult:
     task: str
@@ -81,7 +108,7 @@ def _run(cfg: RunConfig, workdir: Path) -> RunResult:
     log.info("ngeoopt %s  task=%s  workdir=%s", __version__, cfg.task, workdir)
 
     mol = cfg.build_molecule()
-    bopts = dict(cfg.backend)
+    bopts = resolve_backend_paths(dict(cfg.backend), cfg.base_dir)
     backend = make_backend(bopts.pop("name"), **bopts)
     log.info("backend: %s", backend.describe())
     if backend.name == "pyscf" and cfg.parallel.device in ("auto", "mps"):

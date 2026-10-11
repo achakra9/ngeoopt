@@ -82,7 +82,7 @@ if __name__ == "__main__":          # required: workers are spawned processes
     print(res.energy, res.converged)
 ```
 
-More inputs are in [examples/](examples/). See the [manual](docs/MANUAL.md) for every keyword, how root following works, GPU/MPI setup and how to add a backend.
+For your own program, start with [examples/generic_code](examples/generic_code). It is a runnable walkthrough (numerical gradient, optimization, and excited-state root following through a reordering) with a fill-in template. More inputs are in [examples/](examples/). See the [manual](docs/MANUAL.md) for every keyword, how root following works, GPU/MPI setup and how to add a backend.
 
 ## Status
 

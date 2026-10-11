@@ -1,0 +1,39 @@
+# Step 3: excited-state optimization with root following.
+# Target: the bright state (f = 0.052). At the start geometry it is root 2;
+# as the H-O-H angle opens it drops below the dark state and becomes root 1.
+# Tracking by character (multiplicity + energy + oscillator strength) keeps
+# the optimization on the bright state through that reordering.
+#
+#   ngeoopt run excited.yaml
+
+task: optimize
+
+molecule:
+  xyz: water.xyz
+
+backend:
+  name: template
+  template_file: job.tpl
+  variables: {method: tddft-b3lyp, basis: def2-svp}
+  input_name: job.inp
+  output_name: job.out
+  copy_files: [fakeqc.py]
+  command: "python3 fakeqc.py {input} > {output}"
+  parser: parse_fakeqc.py:parse          # returns all states with mult and f
+  success_regex: 'terminated normally'
+
+state:
+  root: 2                                # 0 = ground, 1 = first, 2 = second excited state
+  multiplicity: 1
+  method: character                      # no wavefunction overlaps from a text output
+  energy_scale: 0.01                     # Hartree
+  osc_scale: 0.02
+
+optimizer:
+  convergence: gaussian
+
+parallel:
+  workers: 4
+
+output:
+  workdir: excited_run

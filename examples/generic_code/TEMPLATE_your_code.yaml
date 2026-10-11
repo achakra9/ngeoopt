@@ -1,0 +1,83 @@
+# =====================================================================
+#  ngeoopt input TEMPLATE for any external program
+#  Copy this file, replace every  <<...>>  and delete what you don't need.
+#  Paths are relative to THIS file's folder.
+# =====================================================================
+
+task: optimize                  # energy | gradient | optimize
+
+molecule:
+  xyz: <<start.xyz>>            # or   geometry: |   followed by "El x y z" lines
+  charge: 0
+  multiplicity: 1
+  units: angstrom
+
+backend:
+  name: template
+
+  # ---- 1. how to write the input ----------------------------------
+  # A copy of a working input for your program, with the geometry (and
+  # anything else that changes) replaced by placeholders:
+  #   {{geometry}}  "El x y z" lines        {{xyz}}  full XYZ file
+  #   {{charge}} {{multiplicity}} {{natoms}} {{nthreads}} {{label}}
+  #   {{anything}}  from `variables` below
+  template_file: <<my_code.tpl>>
+  variables: {method: <<b3lyp>>, basis: <<def2-svp>>}
+  geometry_units: angstrom      # units your program expects in {{geometry}}
+  input_name: job.inp
+  output_name: job.out
+
+  # ---- 2. how to run it -------------------------------------------
+  # Runs inside a private directory per single point.
+  # {input} {output} {nthreads} {workdir} {label} are substituted.
+  command: "<<my_program>> {input} > {output}"
+  env: {}                       # e.g. {OMP_STACKSIZE: 1G}
+  scratch_env: null             # e.g. GAUSS_SCRDIR -> a private scratch dir per job
+  copy_files: []                # files needed in every job dir (basis, guess, scripts)
+  timeout: null                 # seconds
+
+  # ---- 3. how to read the energy ----------------------------------
+  # (a) a regex with ONE group around the number (last match is used) ...
+  energy_regex: '<<FINAL ENERGY\s+(\S+)>>'
+  energy_units: hartree         # hartree | ev | kcal/mol | kj/mol
+  success_regex: '<<Normal termination>>'
+  # ... plus, for excited states, a regex matched once per state:
+  # states_regex: 'Excited State\s+\d+:.*?(\S+) eV'
+  # states_are_excitations: true   # numbers are excitation energies
+  # states_units: ev
+  #
+  # (b) ... or a Python parser instead of the regexes (see parse_fakeqc.py):
+  # parser: my_parser.py:parse     # parse(output_text, workdir) -> energy / EnergyResult
+
+# ---- excited states: which state, and how to follow it -------------
+state:
+  root: 0                       # 0 = ground; n = n-th excited state (of `multiplicity`)
+  multiplicity: null
+  method: auto                  # character | energy | overlap (needs signatures) | auto
+  energy_scale: 0.01
+  osc_scale: 0.05
+
+# ---- numerical differentiation -------------------------------------
+gradient:
+  scheme: central               # forward (3N+1 jobs) | central (6N+1) | central4 (12N+1)
+  step: 0.005                   # Bohr. Converge your SCF to ~1e-9 Eh or better!
+  frozen_atoms: []              # 0-based
+
+# ---- optimizer -----------------------------------------------------
+optimizer:
+  method: rfo
+  max_cycles: 100
+  trust_radius: 0.3
+  convergence: gaussian         # loose | gaussian | qchem | tight | verytight
+
+# ---- parallel execution --------------------------------------------
+parallel:
+  executor: process             # serial | process | mpi
+  workers: auto                 # concurrent single points
+  threads_per_worker: 1         # -> {nthreads} / {{nthreads}}
+  retries: 1                    # re-run a crashed single point once
+
+output:
+  workdir: ngeoopt_run
+  keep_files: false             # true keeps every job's input/output
+  restart: true

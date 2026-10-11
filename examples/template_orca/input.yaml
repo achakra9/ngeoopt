@@ -4,7 +4,7 @@ molecule:
   xyz: ../pyscf_water/water.xyz
 backend:
   name: template
-  template_file: job.tpl          # relative to where you launch ngeoopt
+  template_file: job.tpl          # relative to this input file
   input_name: job.inp
   output_name: job.out
   command: "$(which orca) {input} > {output}"
