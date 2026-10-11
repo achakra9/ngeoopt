@@ -36,6 +36,14 @@ class FDSettings:
     project_rigid: bool = True                # remove translation/rotation noise
     frozen_atoms: Sequence[int] = field(default_factory=list)   # 0-based
     use_cache: bool = True
+    # SCF of every displaced geometry starts from the centre-geometry density
+    # (and each new centre from the previous one): keeps broken-symmetry /
+    # open-shell solutions on one branch. Only for backends with supports_guess;
+    # costs one extra sequential single point per gradient.
+    guess_from_center: bool = True
+    # second differences above this (Hartree/Bohr^2) mean the tracked energy
+    # jumped inside the stencil (two different states were differenced)
+    max_curvature: float = 5.0
 
     def __post_init__(self):
         if self.scheme not in STENCILS:
@@ -90,10 +98,20 @@ class FiniteDifferenceGradient:
         self.tracker = tracker or StateTracker()
         self.settings = settings or FDSettings()
         self.cache = cache if self.settings.use_cache else None
+        self.last_guess = None      # density of the latest centre geometry
+
+    @property
+    def _use_guess(self) -> bool:
+        return self.settings.guess_from_center and getattr(self.backend, "supports_guess", False)
+
+    def _remember_guess(self, res: EnergyResult):
+        if self._use_guess and res.extra.get("guess") is not None:
+            self.last_guess = res.extra["guess"]
 
     def energy(self, mol: Molecule, label: str = "sp") -> Tuple[StateInfo, EnergyResult]:
         """Single point at ``mol`` with tracking applied (no gradient)."""
-        res = self._run([Job(label, mol)])[0]
+        res = self._run([Job(label, mol, self.last_guess if self._use_guess else None)])[0]
+        self._remember_guess(res)
         match = self.tracker.advance(res)
         return match.state, res
 
@@ -116,6 +134,46 @@ class FiniteDifferenceGradient:
                 results[i] = r
         return results  # type: ignore[return-value]
 
+    def _check_continuity(self, plan, matches, center: EnergyResult, target: StateInfo,
+                          prefix: str) -> List[str]:
+        """Flag coordinates whose +h/-h energies imply an unphysical curvature.
+
+        Two causes are told apart:
+          * the matched root changed inside the stencil -> two states were
+            probably differenced (tracking problem)
+          * same root on both sides -> genuine, very strong coupling to a nearby
+            state (e.g. a pseudo-Jahn-Teller point); the surface is real but
+            finite differences of this step size are unreliable there
+        """
+        h = self.settings.step
+        e0 = target.energy
+        e = {(a, k, m): mt for (_, a, k, m), mt in zip(plan, matches)}
+        swapped, coupled = [], []
+        for (a, k, m), mt in e.items():
+            if m != 1 or (a, k, -1) not in e:
+                continue
+            mm = e[(a, k, -1)]
+            curv = (mt.state.energy + mm.state.energy - 2.0 * e0) / h ** 2
+            if abs(curv) <= self.settings.max_curvature:
+                continue
+            tag = f"atom {a} {_AXES[k]} ({curv:+.1f} Eh/bohr^2)"
+            (swapped if (mt.swapped or mm.swapped) else coupled).append(tag)
+        if swapped:
+            log.warning("%s: tracked energy jumps along %d coordinate(s) where the matched "
+                        "root changed: %s. Two different states were probably differenced; "
+                        "check the root following or use a smaller step.", prefix,
+                        len(swapped), ", ".join(swapped[:6]) + (" ..." if len(swapped) > 6 else ""))
+        if coupled:
+            others = [abs(s.energy - e0) for s in center.states
+                      if s is not target and not s.extra.get("scf_reference")]
+            gap = min(others) * 1000 if others else float("nan")
+            log.warning("%s: very large curvature along %d coordinate(s) on the same state "
+                        "(nearest state %.2f mEh away): strong coupling, e.g. a pseudo-Jahn-"
+                        "Teller point; finite differences are unreliable here (%s)", prefix,
+                        len(coupled), gap,
+                        ", ".join(coupled[:4]) + (" ..." if len(coupled) > 4 else ""))
+        return swapped + coupled
+
     def compute(self, mol: Molecule, prefix: str = "grad",
                 expected_energy: Optional[float] = None) -> GradientResult:
         """Gradient of the tracked state at ``mol``.
@@ -127,17 +185,30 @@ class FiniteDifferenceGradient:
         s = self.settings
         h = s.step
         plan = displacement_plan(mol, s)
-        jobs = [Job(f"{prefix}/center", mol)]
         x0 = mol.coords
+        center_job = Job(f"{prefix}/center", mol, self.last_guess if self._use_guess else None)
+        disp_jobs = []
         for label, a, k, m in plan:
             x = x0.copy()
             x[a, k] += m * h
-            jobs.append(Job(f"{prefix}/{label}", mol.with_coords(x)))
+            disp_jobs.append(Job(f"{prefix}/{label}", mol.with_coords(x)))
 
-        log.info("%s: %d single points (%s, h=%.4g bohr, %d workers)", prefix, len(jobs),
-                 s.scheme, h, self.executor.nworkers)
-        results = self._run(jobs)
-        center, disp = results[0], results[1:]
+        log.info("%s: %d single points (%s, h=%.4g bohr, %d workers%s)", prefix,
+                 len(disp_jobs) + 1, s.scheme, h, self.executor.nworkers,
+                 ", SCF guess from centre" if self._use_guess else "")
+        if self._use_guess:
+            # centre first; its density seeds every displaced SCF
+            center = self._run([center_job])[0]
+            ncached = self._ncached
+            self._remember_guess(center)
+            for j in disp_jobs:
+                j.guess = self.last_guess
+            disp = self._run(disp_jobs)
+            self._ncached += ncached
+        else:
+            results = self._run([center_job] + disp_jobs)
+            center, disp = results[0], results[1:]
+        jobs = [center_job] + disp_jobs
 
         # pick the target state at the centre, then match every displacement to it
         cmatch = self.tracker.advance(center, expected_energy)
@@ -153,6 +224,7 @@ class FiniteDifferenceGradient:
         for (label, a, k, m), mt in zip(plan, matches):
             grad[a, k] += stencil[m] * mt.state.energy
         grad /= h
+        stats["discontinuous"] = self._check_continuity(plan, matches, center, cmatch.state, prefix)
         if s.project_rigid and not s.frozen_atoms:
             grad = project_rigid(grad, x0)
 
@@ -162,6 +234,14 @@ class FiniteDifferenceGradient:
             log.warning("%s: tracked state not converged in %d single point(s); "
                         "increase td_max_cycle or nroots", prefix, unconverged)
         stats["unconverged"] = int(unconverged)
+        s2 = [m.state.extra.get("s2") for m in [cmatch] + list(matches)]
+        s2 = [v for v in s2 if v is not None]
+        if s2:
+            stats["s2_range"] = (float(min(s2)), float(max(s2)))
+            if max(s2) - min(s2) > 0.1:
+                log.warning("%s: <S^2> of the tracked state varies %.3f-%.3f across the "
+                            "stencil; the gradient mixes spin character (use a smaller step "
+                            "or check the state)", prefix, min(s2), max(s2))
         if stats.get("swaps"):
             log.info("%s: root ordering changed in %d displacement(s); tracked by %s",
                      prefix, stats["swaps"], stats["method"])

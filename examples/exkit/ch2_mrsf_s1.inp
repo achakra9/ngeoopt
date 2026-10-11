@@ -1,0 +1,10 @@
+# exkit input used by ngeoopt: the geometry below is ignored (ngeoopt supplies it),
+# charge/spin come from the ngeoopt molecule section.
+method   = mrsf-tda
+xc       = bhhlyp
+basis    = 6-31g*
+nstates  = 6
+scf_conv_tol = 1e-10
+$geometry
+C 0 0 0
+$end

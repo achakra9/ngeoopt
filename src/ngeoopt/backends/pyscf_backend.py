@@ -54,6 +54,7 @@ class PySCFBackend(EnergyBackend):
 
     name = "pyscf"
     supports_signatures = True
+    supports_guess = True
 
     def __post_init__(self):
         self.method = self.method.lower()
@@ -167,6 +168,10 @@ class PySCFBackend(EnergyBackend):
                 osc = np.atleast_1d(to_numpy(td.oscillator_strength()))
             except Exception:
                 osc = [None] * len(e_exc)
+            try:
+                tdip = np.asarray(to_numpy(td.transition_dipole()), dtype=float).reshape(-1, 3)
+            except Exception:
+                tdip = [None] * len(e_exc)
             mult = (1 if kind == "singlet" else 3) if restricted else None
             for r, (de, xy) in enumerate(zip(e_exc, td.xy)):
                 sig = self._tdm(mf, xy) if self.signatures else None
@@ -175,7 +180,9 @@ class PySCFBackend(EnergyBackend):
                                         multiplicity=mult, oscillator_strength=f,
                                         label=f"{kind[0].upper()}{r + 1}", signature=sig,
                                         extra={"excitation_energy": float(de),
-                                               "converged": bool(conv[r])}))
+                                               "converged": bool(conv[r]),
+                                               "trans_mom": None if tdip[r] is None
+                                               or kind == "triplet" else tuple(tdip[r])}))
         states.sort(key=lambda s: s.energy)
         return states
 
@@ -206,7 +213,10 @@ class PySCFBackend(EnergyBackend):
         m = self._mol(mol, ctx)
         mf = self._scf(m)
         mf, on_gpu = self._maybe_gpu(mf, ctx)
-        mf.kernel()
+        dm0 = ctx.guess
+        if dm0 is not None and np.shape(dm0)[-1] != m.nao_nr():
+            dm0 = None
+        mf.kernel(dm0=dm0)
         converged = bool(mf.converged)
         if not converged:
             log.warning("SCF not converged for %s", ctx.label)
@@ -263,4 +273,5 @@ class PySCFBackend(EnergyBackend):
         if self.signatures and any(s.signature is not None for s in states):
             states[0].ao_overlap = m.intor("int1e_ovlp")
         return EnergyResult(states=states, converged=converged,
-                            extra={"gpu": on_gpu, "scf_energy": e_scf})
+                            extra={"gpu": on_gpu, "scf_energy": e_scf,
+                                   "guess": np.asarray(to_numpy(mf.make_rdm1()))})

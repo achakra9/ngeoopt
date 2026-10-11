@@ -1,0 +1,32 @@
+# MRSF-TDA S1 optimization of CH2 with exkit energies and ngeoopt gradients.
+#   ngeoopt run mrsf_s1.yaml
+task: optimize
+
+molecule:
+  xyz: ch2.xyz
+  multiplicity: 3              # high-spin reference of the spin-flip method
+
+backend:
+  name: exkit
+  input_file: ch2_mrsf_s1.inp  # any exkit keywords; or put them inline under `input:`
+  # input: {method: mrsf-tda, basis: 6-31g*, nstates: 6}
+
+state:
+  root: 1                      # 0 = lowest clean singlet (S0), 1 = S1
+  multiplicity: 1              # count only clean singlets (contaminated roots skipped)
+  method: auto                 # overlap of AO excitation densities
+
+gradient:
+  scheme: central
+  step: 0.005
+  guess_from_center: true      # every displaced SCF starts from the centre density
+
+optimizer:
+  convergence: gaussian
+
+parallel:
+  workers: auto
+  threads_per_worker: 1
+
+output:
+  workdir: mrsf_s1_run

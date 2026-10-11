@@ -127,16 +127,18 @@ def test_qchem_input_generation(tmp_path, water):
     text = be.make_input(water, JobContext(workdir=tmp_path, nthreads=4))
     assert text.startswith("$molecule\n0 1\nO ")
     assert "$rem" in text and "cis_singlets" in text and " true" in text
+    assert "sym_ignore" in text                      # added automatically
     assert "$solvent" in text
     assert be.command.format(input="job.in", output="job.out", nthreads=4) == \
         "qchem -nt 4 job.in job.out"
     assert be.scratch_env == "QCSCRATCH"
 
 
-def test_qchem_parser_not_built_in_yet(tmp_path):
-    be = QChemBackend(rem={"method": "hf"})
-    with pytest.raises(NotImplementedError):
-        be.parse_output("Total energy in the final basis set = -76.0", JobContext(tmp_path))
+def test_qchem_correlated_not_parsed_yet():
+    with pytest.raises(NotImplementedError, match="mp2"):
+        QChemBackend(rem={"method": "mp2", "basis": "cc-pvdz"})
+    # fine with an explicit regex
+    QChemBackend(rem={"method": "mp2"}, energy_regex=r"MP2 total energy =\s+(\S+)")
 
 
 def test_qchem_regex_override(tmp_path):

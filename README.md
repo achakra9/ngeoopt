@@ -2,8 +2,9 @@
 
 ngeoopt optimizes molecular geometries using finite-difference gradients, so it works with any electronic-structure method that can give you an energy, analytic gradients or not. All the displaced single points for a gradient (2×3N for central differences) run in parallel, and on NVIDIA machines each worker gets its own GPU.
 
-- **Backends:** PySCF (built in), Q-Chem (input generation and job running; output parsing pending), any external program through an input template, and any Python function.
-- **Excited states:** root following by transition-density overlap or by state character, so the optimization stays on the same electronic state even when the root ordering changes.
+- **Backends:** PySCF, exkit (SF/MRSF/SF-CISd and every other exkit method), Q-Chem (SCF, TDDFT/TDA/CIS, SF-TDDFT, MRSF-TDDFT parsed), any external program through an input template, and any Python function.
+- **Excited states:** root following that never trusts the root number alone. Each candidate is scored on wavefunction/amplitude overlap, energy (against the optimizer's prediction), ⟨S²⟩, oscillator strength, transition dipole, and root number as a tie-breaker. Guards cover spin-contaminated SF roots, and a continuity check flags stencils that mix two states.
+- **Tricky SCFs:** displaced SCFs start from the centre-geometry density, so broken-symmetry and open-shell references stay on one branch.
 - **Parallel:** local process pool or MPI. Threads per worker, GPU per worker.
 - **GPUs:** gpu4pyscf on NVIDIA. On Apple silicon, the MPS device is passed to torch-based energy functions.
 - **Restartable:** the optimizer state is checkpointed every cycle, and each single point is cached as soon as it finishes, so a killed job resumes mid-gradient.
@@ -17,6 +18,7 @@ pip install ".[pyscf]"         # + PySCF
 pip install ".[cuda12]"        # + PySCF, gpu4pyscf and cupy for CUDA 12
 pip install ".[mps]"           # + torch, for MPS energy functions on Apple silicon
 pip install ".[mpi]"           # + mpi4py for multi-node runs
+pip install -e /path/to/exkit  # exkit backend (exkit is found if importable)
 pip install -e ".[all]"        # development install with tests
 ```
 
@@ -89,11 +91,12 @@ For your own program, start with [examples/generic_code](examples/generic_code).
 | Backend | Energies | Excited states | Overlap tracking | Tested |
 |---|---|---|---|---|
 | PySCF | HF, DFT, MP2, CCSD, CCSD(T), CASSCF/CASCI | TDDFT, TDA/CIS, TDHF, EOM-EE-CCSD | TDDFT/TDA/CIS | yes, against analytic gradients |
-| Q-Chem | via `energy_regex`/`parser` for now | via `states_regex` for now | — | input generation only |
+| exkit | exkit methods with geometry support (MP2, double hybrids, CASSCF, …) | CIS/TDA, SF, MRSF, MD-SF, SF-CISd, pp/hh-TDA, DEA/DIP, IP/EA | AO excitation densities (not SF-CISd, MD-SF, CAS) | 20 methods vs exkit.run; CIS gradient vs PySCF analytic |
+| Q-Chem | SCF/DFT (MP2/CC via regex for now) | TDDFT/TDA/CIS, SF-TDDFT, MRSF-TDDFT | squared amplitudes (+ state-DM populations) | parser on real outputs; jobs not run here |
 | template | anything with a regex or parser | via `states_regex` | — | with a mock program |
 | function | anything in Python (numpy, torch, …) | return a list of states | if you return signatures | yes |
 
-Built-in Q-Chem output parsing (SCF/DFT, TDDFT/CIS, SF/MRSF-TDDFT, MP2/CC/EOM) will be added once reference outputs are available.
+Q-Chem MP2/CC/EOM output parsing will be added once reference outputs are available.
 
 ## Tests
 

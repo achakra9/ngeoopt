@@ -89,3 +89,26 @@ def unconverged_states(symbols, coords):
     e = morse(symbols, coords)
     return EnergyResult(states=[StateInfo(e, 0, 1, extra={"scf_reference": True}),
                                 StateInfo(e + 0.2, 1, 1, extra={"converged": False})])
+
+
+def coupled_pair(symbols, coords, gap=0.002, kappa=0.4):
+    """Two states split by a symmetry-breaking coordinate x (atom 1, x):
+    E = -/+ sqrt(gap^2/4 + (kappa x)^2): a sharp pseudo-Jahn-Teller saddle."""
+    x = np.asarray(coords).reshape(-1, 3)
+    q = x[1, 0]
+    d = np.sqrt((gap / 2) ** 2 + (kappa * q) ** 2)
+    states = [StateInfo(-d, 0, 1), StateInfo(d, 1, 1)]
+    return EnergyResult(states=states)
+
+
+def misleading_signatures(symbols, coords):
+    """Two well separated states whose signatures are exchanged for x > 0
+    (like a singles-only signature of states that differ in their doubles):
+    overlap-first matching then jumps to the other state on one side."""
+    x = np.asarray(coords).reshape(-1, 3)
+    q = x[1, 0]
+    a, b = np.diag([1.0, 0.0]), np.diag([0.0, 1.0])
+    if q > 0:
+        a, b = b, a
+    return EnergyResult(states=[StateInfo(-1.0, 0, 1, signature=a),
+                                StateInfo(-0.95, 1, 1, signature=b)])

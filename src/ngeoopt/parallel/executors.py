@@ -21,7 +21,7 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence
 
 from .. import device as devmod
 from ..backends.base import EnergyBackend, JobContext
@@ -41,6 +41,7 @@ _WORKER = {"device": "cpu", "nthreads": 1}
 class Job:
     label: str
     mol: Molecule
+    guess: Any = None        # passed to the backend as ctx.guess
 
 
 class JobFailed(RuntimeError):
@@ -96,7 +97,7 @@ def run_job(backend: EnergyBackend, job: Job, root: str, keep_files: bool,
     workdir = Path(root) / job.label
     workdir.mkdir(parents=True, exist_ok=True)
     ctx = JobContext(workdir=workdir, label=job.label, nthreads=_WORKER["nthreads"],
-                     device=_WORKER["device"], keep_files=keep_files)
+                     device=_WORKER["device"], keep_files=keep_files, guess=job.guess)
     last_err = None
     for attempt in range(retries + 1):
         t0 = time.perf_counter()

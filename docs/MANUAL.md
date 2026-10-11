@@ -87,19 +87,25 @@ The input is YAML with the sections below. Every keyword is optional except `mol
 
 ### `backend`
 
-`name` picks the backend: `pyscf`, `qchem`, `template` (alias `external`) or `function` (alias `python`). The other keys depend on the backend (§8).
+`name` picks the backend: `pyscf`, `exkit`, `qchem`, `template` (alias `external`) or `function` (alias `python`). The other keys depend on the backend (§8).
 
 ### `state` — which state to optimize, and how to follow it
 
 | Keyword | Default | Meaning |
 |---|---|---|
-| `root` | 0 | target state at the first geometry. 0 = ground / lowest state. Counted among states of `multiplicity` when that is set |
+| `root` | 0 | target state at the first geometry. 0 = ground / lowest state. With `multiplicity` set, it counts only *clean* states of that multiplicity, so spin-contaminated roots are skipped |
 | `multiplicity` | null | restrict root counting and matching to one spin manifold |
-| `method` | auto | `auto`, `overlap`, `character`, `energy`, `index` (§5) |
-| `min_overlap` | 0.5 | warn when the best overlap falls below this |
-| `overlap_tie` | 0.05 | overlaps closer than this are treated as a tie and broken by energy |
-| `energy_scale` | 0.01 | Hartree; weight of the energy change in `character`/`energy` matching |
-| `osc_scale` | 0.05 | weight of the oscillator-strength change in `character` matching |
+| `method` | auto | `auto`/`composite`, `overlap`, `character`, `energy`, `index` (§5) |
+| `overlap_scale` | 0.1 | 1 − overlap of this size costs one unit in the score |
+| `energy_scale` | 0.01 | Hartree; energy difference worth one unit, between optimization cycles |
+| `stencil_energy_scale` | 0.002 | Hartree; the same inside a finite-difference stencil, where energies barely move |
+| `s2_scale` | 0.2 | ⟨S²⟩ difference worth one unit |
+| `osc_scale` | 0.05 | oscillator-strength difference worth one unit (plus 20% of the larger f) |
+| `tdip_scale` | 0.1 | transition-dipole difference (a.u.) worth one unit (plus 20% of the larger \|μ\|) |
+| `index_weight` | 0.05 | cost per position of root-number change; only breaks ties |
+| `s2_max_change` | 0.5 | candidates whose ⟨S²⟩ changes by more than this are excluded |
+| `s2_tolerance` | 0.25 | \|⟨S²⟩ − S(S+1)\| above this marks a state as spin-contaminated |
+| `min_overlap` | 0.5 | warn when the best wavefunction overlap falls below this |
 | `follow` | true | move the reference to the newly matched state after each cycle |
 
 ### `gradient`
@@ -107,10 +113,12 @@ The input is YAML with the sections below. Every keyword is optional except `mol
 | Keyword | Default | Meaning |
 |---|---|---|
 | `scheme` | central | `forward` (3N+1 jobs, O(h)), `backward`, `central` (6N+1, O(h²)), `central4` (12N+1, O(h⁴)) |
-| `step` | 0.005 | displacement in Bohr |
+| `step` | 0.005 | displacement in Bohr (0.01 by default for the Q-Chem backend, §8) |
 | `project_rigid` | true | remove translation/rotation from the gradient |
 | `frozen_atoms` | [] | 0-based indices; never displaced, zero gradient, never moved |
 | `use_cache` | true | reuse finished single points (restart) |
+| `guess_from_center` | true | SCF of every displaced geometry starts from the centre density, and each new centre from the previous one (backends that support it: PySCF, exkit). Costs one sequential single point per gradient |
+| `max_curvature` | 5.0 | Eh/Bohr²; larger second differences inside a stencil trigger the continuity warning (§5) |
 
 ### `optimizer`
 
@@ -169,33 +177,76 @@ As a dict: `{preset: tight, max_force: 1e-5, mode: all}`. `mode` is one of:
 
 ## 5. Root following (state tracking)
 
-Root numbers are not stable labels for states. Two things can reorder them:
-- the target state crossing another state along the optimization path;
-- a displacement within the finite-difference stencil, near a crossing.
+Root numbers are not stable labels for states. The ordering changes along a coordinate:
+- when the target crosses or approaches another state along the optimization path;
+- inside one finite-difference stencil, near a crossing or a strongly coupled pair.
 
-Taking "root 2" at every displaced geometry would then difference two different states. ngeoopt never assumes the root number identifies the state. At every geometry it picks the state that matches a **reference**:
+If root 2 were taken at every geometry, two different states could be differenced. ngeoopt never trusts the root number on its own. At every geometry, it scores each candidate against a **reference** state using all the evidence the backend provides, and picks the lowest cost.
 
-| `method` | How the match is made | Needs |
+### The composite score (`method: auto`)
+
+| Evidence | Cost term | From |
 |---|---|---|
-| `overlap` | largest \|⟨ref\|candidate⟩\| of AO-basis transition densities, using the AO overlap matrix: \|tr(T₁ᵀ S T₂ S)\| / ‖T₁‖‖T₂‖. Ties (within `overlap_tie`) go to the closer energy | backend signatures (PySCF TDDFT/TDA/CIS, or your function) |
-| `character` | same multiplicity, then the smallest \|ΔE\|/`energy_scale` + \|Δf\|/`osc_scale` | multiplicities, oscillator strengths if available |
-| `energy` | closest energy | nothing |
-| `index` | same root number, i.e. no tracking | for debugging only |
-| `auto` | `overlap` if every candidate has a signature, otherwise `character` | |
+| wavefunction / orbital amplitudes | (1 − \|⟨ref\|cand⟩\|) / `overlap_scale` | PySCF: AO transition densities; exkit: AO excitation densities ∑ Co X Cvᵀ; Q-Chem: squared amplitudes (+ state-density hole/electron populations with `state_analysis`) |
+| energy | \|E − E_expected\| / `energy_scale` | all backends |
+| ⟨S²⟩ | \|Δ⟨S²⟩\| / `s2_scale` | Q-Chem SF/MRSF, exkit |
+| oscillator strength | \|Δf\| / (`osc_scale` + 0.2 max f) | PySCF, Q-Chem, exkit (spin-conserving) |
+| transition dipole | ‖ \|μ\| − \|μ_ref\| ‖ / (`tdip_scale` + 0.2 max \|μ\|) | PySCF, Q-Chem, exkit (spin-conserving) |
+| root number | `index_weight` × \|Δindex\| | always; a tie-breaker only |
 
-How the reference is used:
-- **Inside one gradient:** the target is first matched at the undisplaced geometry, against the previous cycle's state. Every displaced geometry is then matched against that center state.
-- **Between cycles:** with `follow: true`, the reference moves to the state matched at each new geometry, so the state can change character slowly without the overlap dropping. The reference moves only on accepted steps; a rejected step restores it.
-- **Energy terms between cycles:** for `character`/`energy` matching (and overlap tie-breaks), each candidate is compared against the energy the optimizer's quadratic model predicts for the target (E + g·s + ½ sᵀHs), not the previous geometry's energy. A real step changes the target's own energy by more than the gap to its neighbours, and the prediction keeps the match on the right state.
-- **SCF reference:** the reference determinant of a TDDFT/CIS run (flagged `scf_reference`) is identified by that flag, never by its position. An excited-state target is never allowed to collapse onto it.
-- **Spin-flip / MRSF:** the "ground" state here is itself one of the roots, so it has no such flag and is tracked like any other root.
+How the terms are computed:
+- Each term is about 1 when two states are clearly different.
+- A term drops out when the backend does not provide its data.
+- Overlaps are free of orbital phases: AO-basis densities are invariant to orbital sign flips between separate SCF runs, and Q-Chem amplitudes are compared squared.
+- Transition dipoles are compared component-wise in absolute value, because their overall sign is arbitrary.
 
-Limitations:
-- `energy` matching follows the *adiabatic* surface. At a true crossing it switches to whichever state is closest in energy, which is usually the wrong one. Prefer `overlap`, or `character` when the states differ in spin or brightness.
-- Ask for a few more roots (`nroots`) than the target, so the target cannot drop out of the computed set.
-- Overlaps between cycles use the reference geometry's AO overlap matrix. That is accurate for finite-difference displacements and for normal optimization steps. With very large steps, lower `trust_max`.
+The energy reference:
+- **Between optimization cycles**, `E_expected` is the energy the optimizer's quadratic model predicts for the target, E + g·s + ½ sᵀHs. One real step changes the target's own energy by more than the gap to its neighbours, and the prediction keeps the match on the right state.
+- **Inside a gradient stencil**, it is the centre energy, weighted with the tighter `stencil_energy_scale`. A 0.005 Bohr displacement moves a state by micro-Hartrees, so a jump of tens of mEh is never the same state, whatever an overlap says.
 
-The log shows the tracking per gradient, for example `root ordering changed in 4 displacement(s); tracked by overlap`. `ngeoopt status` lists the root number per cycle, which changes when the state changes position in the ordering.
+Hard guards are applied before scoring:
+- An excited target never collapses onto the SCF reference determinant. That determinant is flagged `scf_reference` and identified by the flag, never by position.
+- Candidates of a different clean multiplicity are excluded.
+- Candidates whose ⟨S²⟩ jumps by more than `s2_max_change` are excluded. A clean SF singlet is never swapped for a contaminated singlet/triplet mixture, or for a triplet with the same squared amplitudes. That second case is real: SF2 and SF4 in a butadiene SF-TDDFT output have overlapping amplitudes above 0.99.
+
+The other `method` values are weight presets of the same score:
+
+| `method` | Weights |
+|---|---|
+| `auto` / `composite` | all terms |
+| `overlap` | overlap first; energy only breaks near-ties |
+| `character` | energy, ⟨S²⟩, f, transition dipole; no wavefunction |
+| `energy` | energy only. Follows the *adiabatic* surface: at a true crossing it switches state |
+| `index` | the root number only, i.e. no tracking. Explicit opt-in for debugging |
+
+### Spin-flip methods and spin contamination
+
+SF-TDDFT roots can be strongly spin-contaminated (⟨S²⟩ ≈ 1). ngeoopt handles this as follows:
+- **Multiplicity:** it is derived from ⟨S²⟩ with the electron-count parity, so an even-electron state with ⟨S²⟩ = 0.95 is *contaminated* (multiplicity None), not a doublet.
+- **Choosing the start state:** `root` with `multiplicity` counts only clean states. `root: 1, multiplicity: 1` is the first excited *clean* singlet.
+- **Matching:** ⟨S²⟩ enters every match, and jumps are excluded.
+- **Warnings:** the log warns when the tracked state itself is contaminated. Within a gradient, it warns when ⟨S²⟩ varies across the stencil (by more than 0.1).
+
+For spin-flip methods the high-spin reference is not a state of the manifold. The states are only the SF roots, so `root: 0` is the lowest SF state (usually S0).
+
+### Reference updates
+
+- **Inside one gradient:** the target is first matched at the undisplaced geometry, against the previous cycle's state. Every displaced geometry is then matched against that centre state.
+- **Between cycles:** with `follow: true`, the reference moves to the state matched at each new accepted geometry, so the state can change character slowly. A rejected step restores the previous reference.
+
+### Continuity check
+
+After each gradient, every coordinate's +h/−h energies are checked. A second difference above `max_curvature` (default 5 Eh/Bohr²) gives one of two warnings:
+- **"Two different states were probably differenced":** the matched root changed inside the stencil. This is a tracking problem; check `state.method` and the backend's evidence, or use a smaller step.
+- **"Very large curvature … on the same state":** the root did not change, and the gap to the nearest state is reported. This is genuine strong coupling, for example a pseudo-Jahn–Teller point. The surface is real, but finite differences of this step size are unreliable there.
+
+The second case shows up for S1 of twisted ethylene with SF-CISd. Two zwitterionic singlets about 2 mEh apart couple so strongly that any symmetry-breaking displacement lowers the target by about 1 mEh, a curvature of about −170 Eh/Bohr². The optimization moves away from that saddle on its own.
+
+Practical notes:
+- Ask for a few more roots (`nroots`/`nstates`/`cis_n_roots`) than the target, so the target cannot drop out of the computed set.
+- Overlaps between cycles use the reference geometry's AO overlap matrix. That is accurate for normal steps; with very large steps, lower `trust_max`.
+- `ngeoopt status` lists the root number per cycle. It changes when the state changes position in the ordering, and the log says `root flip: target state is now root 3 (was 2)`.
+- `log_level: debug` prints every match's cost terms.
 
 ## 6. Parallel execution and GPUs
 
@@ -290,6 +341,53 @@ State list returned:
 - for `spin_states: both`, singlets and triplets are merged and sorted by energy, so use `state.multiplicity` to pick the manifold;
 - for CASSCF/CASCI, the states are the (state-averaged) roots, matched by character.
 
+### exkit (`name: exkit`)
+
+exkit methods mostly have no analytic gradients (SF-CIS/TDA, SF-CISd, MRSF-CIS/TDA, MD-SF, pp/hh-TDA, DEA/DIP, IP/EA, RI-MP2, double hybrids, …). ngeoopt drives them by finite differences with the root following of §5. Each single point mirrors exkit's own numerical-geometry energy evaluation:
+- the molecule and SCF are built with `exkit.driver.build_mol` / `build_scf`, with no geometry symmetrization, which would undo a small displacement;
+- every displaced SCF starts from the centre density (`gradient.guess_from_center`), which keeps broken-symmetry and open-shell references on one branch;
+- an SCF that does not converge fails the job instead of being used (`retries` re-runs it).
+
+```yaml
+molecule: {xyz: ch2.xyz, multiplicity: 3}     # high-spin reference for spin-flip methods
+backend:
+  name: exkit
+  input_file: ch2_mrsf_s1.inp                  # any exkit input; its geometry is ignored
+  # or inline:
+  # input: {method: mrsf-tda, basis: 6-31g*, nstates: 6}
+state: {root: 1, multiplicity: 1}
+```
+
+| Keyword | Default | Meaning |
+|---|---|---|
+| `input` | {} | exkit keywords (`method`, `basis`, `xc`, `nstates`, `scf_*`, `jk`, `backend`, …), checked by exkit's own parser, so typos fail before any job runs |
+| `input_file` | null | an exkit `.inp`; `input` entries override it |
+| `signatures` | true | attach AO excitation densities for overlap tracking |
+| `davidson_conv_tol` | 1e-7 | upper bound on exkit `conv_tol` |
+| `davidson_max_cycle` | 200 | lower bound on exkit `max_cycle` |
+| `scf_conv_tol_grad` | 1e-7 | used unless the exkit input sets it. With PySCF's default √(1e-10) the gradient error of CIS S1 was 4e-5 Eh/Bohr; with 1e-7 it is 5e-6 (central) and 3e-7 (`central4`) |
+| `require_scf_converged` | true | fail a job whose SCF did not converge |
+| `seed` | 0 | reseed NumPy's global random state before every job (`null` = off), see below |
+| `cas_conv_tol` | 1e-10 | CAS methods, unless the input sets `cas_conv_tol`; at exkit's default 1e-8, SA-CASSCF energies scatter by ~2e-7 Eh between runs (~2e-5 Eh/Bohr gradient noise) |
+
+ngeoopt controls these itself:
+- geometry, units, charge and spin, which come from the `molecule` section;
+- `verbose`, `analysis`, `optimize`, `frequency` and `symmetry` (forced to c1);
+- per-job `outdir` and `threads`, and `device` on CUDA workers.
+
+The states returned depend on the method:
+- **Spin-conserving methods** (reference in the state space, e.g. `cis`, `tda`): the SCF reference, then the roots. Each root has ⟨S²⟩, multiplicity, transition dipole and oscillator strength, computed from the excitation densities. These match PySCF's for CIS exactly.
+- **Spin-flip and other methods:** only the roots, with ⟨S²⟩ and an AO excitation-density signature.
+- **Methods with doubles (SF-CISd):** no signature. Near-degenerate states can share almost the same singles (twisted ethylene's zwitterionic pair overlaps 0.97 with the *other* state in its singles part), so a singles-only overlap misleads. They are tracked by ⟨S²⟩, the predicted energy and the root number. For the twisted-ethylene S1 run, exkit's own doubles-aware overlaps confirm the path chosen.
+- **Ground-state methods** (MP2, double hybrids): one state.
+- **Not supported:** methods with `supports_geomopt = False` (e.g. IP/EA-EOM-MP2, TEA/TIP) and periodic methods are refused.
+- **CASSCF and multiple solutions:** exkit's CAS path takes its initial CI guess from NumPy's global random state. For water CAS(4,4)/STO-3G, `exkit.run()` called repeatedly in one process lands on two different SA-CASSCF solutions (−74.9800 / −74.9684 Eh). A worker process runs many displaced jobs, so the backend reseeds before every job, and every displacement starts from the same random state and finds the same solution.
+- **Q-Chem integrals:** with exkit's `integrals: qchem`, exkit writes and runs Q-Chem in each job's directory.
+
+Verified against `exkit.run()` (energies to ~1e-13 Eh): cis, tda, sf-cis, sf-tda, sf-cisd, mrsf-cis, mrsf-tda, mrsf-tddft, md-sf-cis, md-sf-tda, pp-tda, hh-tda, dea, dip, ip-cis, ip-tda, ea-cis, ea-tda, mp2, b2plyp. The CIS S1 finite-difference gradient matches PySCF's analytic TDA gradient (5e-6 central, 3e-7 `central4`).
+
+Examples: `examples/exkit/mrsf_s1.yaml` (MRSF-TDA S1 of CH₂, 7 cycles) and `examples/exkit/sf_cisd_twisted.yaml` (SF-CISd S1 of twisted ethylene, through a root reordering and a strongly coupled region).
+
 ### Q-Chem (`name: qchem`)
 
 The input file is generated from a `rem` dict (or your own `template_file` with `{{placeholders}}`), plus optional `extra_sections`. Each single point runs as `qchem -nt {nthreads} job.in job.out` in its own directory, with its own `QCSCRATCH`, so concurrent jobs never share scratch.
@@ -297,15 +395,32 @@ The input file is generated from a `rem` dict (or your own `template_file` with 
 ```yaml
 backend:
   name: qchem
-  rem: {method: b3lyp, basis: 6-31g*, scf_convergence: 10, sym_ignore: true}
-  extra_sections: |
-    $solvent
-    solventname water
-    $end
-  energy_regex: 'Total energy in the final basis set =\s+(\S+)'
+  rem: {method: bhhlyp, basis: cc-pvdz, unrestricted: false, spin_flip: 2,
+        cis_n_roots: 6, cis_singlets: true, scf_convergence: 10, cis_convergence: 8, xc_grid: 3}
 ```
 
-**Built-in output parsing is not implemented yet.** It will cover SCF/DFT, TDDFT/CIS, SF- and MRSF-TDDFT, MP2/CC and EOM states, written against reference outputs. Until then, read energies with `energy_regex` / `states_regex` or a `parser` function, exactly as for the template backend. Keep `sym_ignore: true` and `scf_convergence` ≥ 9 for finite differences (§10).
+**Built-in parser.** Written and tested against Q-Chem 7.0 outputs (butadiene, BHHLYP/cc-pVDZ):
+
+| Calculation | What is read |
+|---|---|
+| SCF / DFT | energy from the converged SCF iteration line (10 decimals; `Total energy =` has only 8) |
+| TDDFT / TDA / CIS | the last `… Excitation Energies` block (full TDDFT when TDA is also printed): total energy, `Multiplicity`, oscillator strength, transition moment, amplitudes. The SCF reference is the first state |
+| SF-TDDFT, MRSF-TDDFT | the SF roots only (the "ground state" is SF state 1); multiplicity from ⟨S²⟩ with electron parity, so contaminated roots get none; `Strength`/`Trans. Mom.` when printed (MRSF: relative to the lowest MRSF state) |
+| Davidson | the last iteration table: if roots are left unconverged, the highest ones are flagged |
+| `state_analysis` | hole/electron Mulliken populations per atom from the *state/difference* density matrices, added to the signature |
+
+Root-following evidence:
+- squared CI amplitudes, keyed by excitation and spin (phase-free);
+- energies, ⟨S²⟩, oscillator strengths and transition moments;
+- with `state_analysis: true`, the per-atom hole/electron populations.
+
+Anything derived from *transition* densities (TDM populations, Ω matrices in `ctnum_mulliken.om`, NTO decompositions) is deliberately not used. In MRSF outputs those are currently incomplete: SA-NTO weights above 100% appear.
+
+What ngeoopt adds or warns about:
+- `sym_ignore = true` is added unless you set `sym_ignore`/`symmetry`. A 0.005 Bohr displacement can fall inside Q-Chem's symmetry tolerance and be symmetrized away.
+- Warnings if `SCF_CONVERGENCE` < 9, if `CIS_CONVERGENCE` < 7, or if a DFT run has no `XC_GRID` (the SG-1 default grid is too coarse for smooth differences).
+- Precision: excited-state energies are printed with 8 decimals, so the default step for Q-Chem is 0.01 Bohr unless you set `gradient.step`. The `tight`/`verytight` criteria log a warning, because rounding limits gradients to about 5e-7 Eh/Bohr.
+- MP2/CC/EOM outputs are not parsed yet (no reference outputs). For those, set `energy_regex` / `states_regex` or a `parser`, exactly as for the template backend.
 
 ### Any program (`name: template`)
 
@@ -430,9 +545,14 @@ The lower-level pieces can be combined freely: `make_executor`, `FiniteDifferenc
 |---|---|
 | `A process in the process pool was terminated abruptly` | missing `if __name__ == "__main__":` guard in your script, or a worker ran out of memory (lower `workers` or `max_memory`) |
 | `unknown keyword(s) in [gradient]: ['stepsize']` | typo; the message lists the valid keywords |
-| `best state overlap 0.3 below threshold` | strong mixing or a too-large step: lower `trust_max`, add `nroots`, or check the state character |
+| `best state overlap 0.3 below threshold` | strong mixing or a too-large step: lower `trust_max`, add roots, or check the state character |
 | `tracked state not converged in N single point(s)` | raise `td_max_cycle` or `nroots` |
 | optimization oscillates near the end | gradient noise: tighten SCF/response convergence, or use `central4` |
 | `device 'cuda' requested but no CUDA device is visible` | install cupy / gpu4pyscf, check `CUDA_VISIBLE_DEVICES` |
 | a PySCF job on a Mac logs CPU only | expected: PySCF has no Metal backend |
-| Q-Chem `NotImplementedError` | built-in parsing is pending; set `energy_regex` (§8) |
+| Q-Chem `NotImplementedError` for MP2/CC | correlated outputs are not parsed yet; set `energy_regex` (§8) |
+| `… Two different states were probably differenced` | the matched root changed inside a stencil and the energy jumped: check `state.method`, add evidence (e.g. `state_analysis`), or use a smaller step |
+| `very large curvature … on the same state` | genuine strong coupling to a state a few mEh away (pseudo-Jahn–Teller point); finite differences are unreliable there, but the optimizer usually leaves such saddles on its own |
+| `tracked state is spin-contaminated` | the target SF root has ⟨S²⟩ far from S(S+1); consider MRSF, or check that `root`/`multiplicity` pick the state you mean |
+| `every candidate changes <S^2> by more than …` | the tracked state lost its spin character between geometries; raise `s2_max_change` only if that is physical |
+| `exkit SCF did not converge` | use exkit SCF controls (`scf_algorithm = soscf`, `scf_level_shift`, `scf_damping`); `parallel.retries` re-runs failed jobs |

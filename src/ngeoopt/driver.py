@@ -63,8 +63,9 @@ def _resolve_spec(spec, base: Path):
 
 def resolve_backend_paths(opts: dict, base: Path) -> dict:
     """Make file paths in the backend section relative to the input file."""
-    if opts.get("template_file"):
-        opts["template_file"] = _resolve(opts["template_file"], base)
+    for key in ("template_file", "input_file"):
+        if opts.get(key):
+            opts[key] = _resolve(opts[key], base)
     if opts.get("copy_files"):
         opts["copy_files"] = [_resolve(f, base) for f in opts["copy_files"]]
     for key in ("parser", "function"):
@@ -116,6 +117,17 @@ def _run(cfg: RunConfig, workdir: Path) -> RunResult:
         if detect().kind == "mps":
             log.info("PySCF has no Apple Metal backend; energies run on CPU cores "
                      "(MPS is used only by torch-based function backends)")
+
+    if backend.name == "qchem" and backend.parser is None and backend.energy_regex is None:
+        # Q-Chem prints excited-state energies with 8 decimals: 5e-9 Eh rounding
+        # becomes ~1e-6 Eh/Bohr gradient noise at h = 0.005
+        if "step" not in cfg.given.get("gradient", set()):
+            cfg.gradient.step = 0.01
+            log.info("Q-Chem: finite-difference step set to 0.01 Bohr (energies are printed "
+                     "with 8 decimals); set gradient.step to override")
+        if cfg.optimizer.convergence.max_force < 1e-4:
+            log.warning("Q-Chem energies carry ~5e-9 Eh rounding: gradients are good to "
+                        "~5e-7 Eh/Bohr at best, so tight/verytight criteria may not be reachable")
 
     cache = ResultCache(workdir / "cache", backend_tag(backend)) if out.cache else None
     par = cfg.parallel

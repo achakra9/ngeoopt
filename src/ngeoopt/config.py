@@ -66,6 +66,7 @@ class RunConfig:
     parallel: ParallelSettings = field(default_factory=ParallelSettings)
     output: OutputSettings = field(default_factory=OutputSettings)
     base_dir: Path = field(default_factory=Path.cwd)
+    given: Dict[str, set] = field(default_factory=dict)   # keywords set explicitly, per section
 
     def build_molecule(self) -> Molecule:
         m = self.molecule
@@ -126,6 +127,8 @@ def config_from_dict(d: Dict[str, Any], base_dir: Optional[Path] = None) -> RunC
         parallel=_build(ParallelSettings, d.get("parallel"), "parallel"),
         output=_build(OutputSettings, d.get("output"), "output"),
         base_dir=Path(base_dir or Path.cwd()),
+        given={k: set((d.get(k) or {}).keys()) for k in SECTIONS
+               if isinstance(d.get(k), dict)},
     )
 
 

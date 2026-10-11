@@ -72,7 +72,7 @@ def test_tda_s1_gradient_with_overlap_tracking(tmp_path):
     be = PySCFBackend(method="hf", basis="6-31g", excited="cis", nroots=4)
     gr = fd(mol, be, tmp_path, TrackingSettings(root=1, multiplicity=1), scheme="central",
             workers=6)
-    assert gr.tracking["method"] == "overlap"
+    assert gr.tracking["method"] == "composite"
     assert gr.tracking["min_overlap"] > 0.99
     mf = scf.RHF(pyscf_mol(mol, "6-31g")).run(conv_tol=1e-12, conv_tol_grad=1e-8)
     td = tdscf.TDA(mf)
@@ -120,3 +120,17 @@ def test_bad_options():
         from ngeoopt.backends.base import JobContext
         from pathlib import Path
         PySCFBackend(use_gpu="always")._maybe_gpu(None, JobContext(Path("."), device="cpu"))
+
+
+def test_singlet_transition_dipoles(tmp_path, water):
+    from ngeoopt.backends.pyscf_backend import PySCFBackend
+    from ngeoopt.backends.base import JobContext
+    res = PySCFBackend(method="hf", basis="sto-3g", excited="tda", nroots=3,
+                       spin_states="both").compute(water, JobContext(tmp_path))
+    for s in res.states[1:]:
+        mu = s.extra["trans_mom"]
+        if s.multiplicity == 3:
+            assert mu is None
+        else:
+            w = s.extra["excitation_energy"]
+            assert s.oscillator_strength == pytest.approx(2 / 3 * w * np.dot(mu, mu), abs=1e-8)

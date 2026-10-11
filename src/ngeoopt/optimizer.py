@@ -228,6 +228,8 @@ class Optimizer:
         if st is not None:
             log.info("restarting from %s at cycle %d", self.checkpoint_path, st["cycle"])
             self.fd.tracker.load_state_dict(st["tracker"])
+            if st.get("scf_guess") is not None:
+                self.fd.last_guess = st["scf_guess"]
             if st.get("converged"):
                 log.info("checkpoint is already converged")
                 best = mol.with_coords(st["x_best"])
@@ -309,6 +311,8 @@ class Optimizer:
             st.update(cycle=cycle, x_next=x, x_best=x_best, g_best=g_best, e_best=e_best,
                       H=H, trust=trust, pred=pred, history=history, converged=converged,
                       tracker=self.fd.tracker.state_dict())
+            if self.fd.last_guess is not None:
+                st["scf_guess"] = np.asarray(self.fd.last_guess)
             self._save(st)
             if converged:
                 break

@@ -55,10 +55,12 @@ def test_index_mode_does_not_track():
     assert m.state.label == "B"   # stays on root 1, which is now the other state
 
 
-def test_auto_picks_overlap_when_signatures_exist():
+def test_auto_uses_overlap_inside_composite_score():
     tr = StateTracker(TrackingSettings(root=1))
     tr.initialize(models.crossing_states(None, diatomic(2.0).coords))
-    assert tr.select(models.crossing_states(None, diatomic(1.9).coords)).method == "overlap"
+    m = tr.select(models.crossing_states(None, diatomic(1.9).coords))
+    assert m.method == "composite" and m.overlap == pytest.approx(1.0)
+    assert set(m.terms) >= {"overlap", "energy", "index"}
 
 
 def test_multiplicity_filter_counts_within_manifold():
@@ -124,3 +126,78 @@ def test_optimizer_follows_state_through_crossing(tmp_path):
     assert r == pytest.approx(1.5, abs=1e-4)
     roots = [h.root for h in res.history]
     assert roots[0] == 1 and roots[-1] == 0   # the root number changed, the state did not
+
+
+# -- composite score: every piece of evidence counts ---------------------------
+
+def _st(e, idx, **extra):
+    f = extra.pop("f", None)
+    return StateInfo(e, idx, 1, oscillator_strength=f, extra=extra)
+
+
+def test_transition_dipole_sign_is_ignored_and_used():
+    ref = _st(-1.0, 1, trans_mom=(0.8, 0.0, 0.1), s2=0.0)
+    same_flipped = _st(-1.0, 1, trans_mom=(-0.8, 0.0, -0.1), s2=0.0)
+    other = _st(-1.0, 2, trans_mom=(0.0, 0.7, 0.0), s2=0.0)
+    tr = StateTracker(TrackingSettings())
+    tr.set_reference(ref)
+    m = tr.select(EnergyResult(states=[other, same_flipped]))
+    assert m.state is same_flipped and m.terms["tdip"] == pytest.approx(0.0)
+
+
+def test_oscillator_strength_separates_bright_and_dark():
+    ref = _st(-1.0, 2, f=0.8)
+    dark = _st(-1.001, 1, f=0.001)
+    bright = _st(-0.998, 2, f=0.75)
+    tr = StateTracker(TrackingSettings())
+    tr.set_reference(ref)
+    assert tr.select(EnergyResult(states=[dark, bright])).state is bright
+
+
+def test_root_number_only_breaks_ties():
+    ref = _st(-1.0, 1, s2=0.0)
+    a, b = _st(-1.0, 1, s2=0.0), _st(-1.0, 2, s2=0.0)
+    tr = StateTracker(TrackingSettings())
+    tr.set_reference(ref)
+    assert tr.select(EnergyResult(states=[a, b])).state is a          # identical evidence
+    # but any real evidence outweighs the root number
+    a2, b2 = _st(-0.98, 1, s2=0.0), _st(-1.0, 2, s2=0.0)
+    m = tr.select(EnergyResult(states=[a2, b2]))
+    assert m.state is b2 and m.swapped
+
+
+def test_terms_drop_out_when_data_missing():
+    ref = _st(-1.0, 1)
+    tr = StateTracker(TrackingSettings())
+    tr.set_reference(ref)
+    m = tr.select(EnergyResult(states=[_st(-1.0, 1), _st(-0.9, 2)]))
+    assert set(m.terms) == {"energy", "index"}
+
+
+def test_discontinuous_stencil_is_flagged(tmp_path, caplog):
+    """Overlap-first matching with a misleading signature jumps to the other
+    state on one side of the stencil: the continuity check must say so."""
+    be = FunctionBackend(function="models:misleading_signatures")
+    fd = FiniteDifferenceGradient(be, SerialExecutor(scratch=tmp_path),
+                                  StateTracker(TrackingSettings(root=0, method="overlap")),
+                                  FDSettings(step=0.005, project_rigid=False))
+    gr = fd.compute(diatomic(2.0))
+    assert gr.tracking["discontinuous"] and "probably differenced" in caplog.text
+    # the composite score weighs the 50 mEh energy jump and stays on the state
+    caplog.clear()
+    ok = FiniteDifferenceGradient(be, SerialExecutor(scratch=tmp_path),
+                                  StateTracker(TrackingSettings(root=0)),
+                                  FDSettings(step=0.005, project_rigid=False))
+    assert ok.compute(diatomic(2.0)).tracking["discontinuous"] == []
+
+
+def test_strong_coupling_is_reported_as_curvature_not_tracking(tmp_path, caplog):
+    """Two coupled states with a small gap: same root on both sides of the
+    stencil, but a huge (real) curvature -> 'strong coupling' warning."""
+    be = FunctionBackend(function="models:coupled_pair")
+    fd = FiniteDifferenceGradient(be, SerialExecutor(scratch=tmp_path),
+                                  StateTracker(TrackingSettings(root=0, method="energy")),
+                                  FDSettings(step=0.005, project_rigid=False))
+    gr = fd.compute(diatomic(2.0))
+    assert gr.tracking["discontinuous"]
+    assert "strong coupling" in caplog.text and "probably differenced" not in caplog.text

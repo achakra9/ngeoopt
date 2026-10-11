@@ -13,7 +13,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ..geometry.molecule import Molecule
 from ..results import EnergyResult
@@ -28,6 +28,7 @@ class JobContext:
     nthreads: int = 1
     device: str = "cpu"          # 'cpu', 'cuda', 'cuda:1', 'mps'
     keep_files: bool = False
+    guess: Any = None            # SCF initial guess (e.g. density of the centre geometry)
 
 
 class EnergyBackend(abc.ABC):
@@ -35,6 +36,9 @@ class EnergyBackend(abc.ABC):
 
     #: whether this backend can produce overlap signatures for root following
     supports_signatures: bool = False
+
+    #: whether compute() uses ctx.guess and returns result.extra["guess"]
+    supports_guess: bool = False
 
     @abc.abstractmethod
     def compute(self, mol: Molecule, ctx: JobContext) -> EnergyResult:
